@@ -107,38 +107,45 @@ package main
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/simonks2016/efi_math/agg"
 )
 
-type Tick struct {
-	Symbol string
-	Value  float64
-	Time   time.Time
+type Trade struct {
+	IsBuy  bool
+	Price  float64
+	Volume float64
 }
 
 func main() {
-	items := []Tick{
-		{Symbol: "A", Value: 0.2, Time: time.Unix(2, 0)},
-		{Symbol: "A", Value: 0.1, Time: time.Unix(3, 0)},
-		{Symbol: "A", Value: 0.1, Time: time.Unix(1, 0)},
-		{Symbol: "B", Value: 100, Time: time.Unix(1, 0)},
-		{Symbol: "B", Value: 80, Time: time.Unix(2, 0)},
-		{Symbol: "B", Value: 120, Time: time.Unix(3, 0)},
+	trades := []Trade{
+		{IsBuy: true, Price: 10, Volume: 2},
+		{IsBuy: false, Price: 20, Volume: 3},
+		{IsBuy: true, Price: 12, Volume: 4},
+		{IsBuy: false, Price: 25, Volume: 1},
 	}
 
-	a := agg.NewAggregator(
-		items,
-		func(x Tick) string { return x.Symbol },
-		func(x Tick) float64 { return x.Value },
-		agg.WithTime(func(x Tick) time.Time { return x.Time }),
+	tradeAgg := agg.NewGroup(
+		trades,
+		func(trade Trade) string {
+			if trade.IsBuy {
+				return "buy"
+			}
+			return "sell"
+		},
+		agg.Field("volume", func(trade Trade) float64 {
+			return trade.Volume
+		}),
+		agg.Field("notional", func(trade Trade) float64 {
+			return trade.Price * trade.Volume
+		}),
 	)
 
-	fmt.Println(a.Mean())           // map[A:0.13333333333333333 B:100]
-	fmt.Println(a.SumSquaredDiff()) // map[A:0.02 B:2000]
-	fmt.Println(a.Return())         // map[A:0 B:0.2]
-	fmt.Println(a.MaxDrawdown())    // map[A:0.5 B:0.2]
+	fmt.Println(tradeAgg.Field("volume").Sum())               // map[buy:6 sell:4]
+	fmt.Println(tradeAgg.Field("notional").Sum())             // map[buy:68 sell:85]
+	fmt.Println(tradeAgg.Group("buy").Field("volume").Sum())  // 6
+	fmt.Println(tradeAgg.Group("sell").Field("notional").Sum()) // 85
+	fmt.Println(tradeAgg.Group("buy").Count())                // 2
 }
 ```
 
@@ -215,11 +222,46 @@ efi_math/
 
 ## 🧩 agg：泛型分组聚合器 / Generic Grouped Aggregator
 
-`agg` 接受任意 `[]T`，通过 `keyFn` 分组，通过 `valueFn` 提取数值，然后调用 `core`、`series`、`finance` 完成计算。
+`agg` 接受任意 `[]T`，通过 `keyFn` 分组，通过多个 `Field` 提取数值字段，然后调用 `core`、`series`、`finance` 完成计算。
 
-`agg` accepts arbitrary `[]T`, groups records with `keyFn`, extracts numeric values with `valueFn`, and delegates calculations to `core`, `series`, and `finance`.
+`agg` accepts arbitrary `[]T`, groups records with `keyFn`, extracts multiple numeric fields with `Field`, and delegates calculations to `core`, `series`, and `finance`.
 
-### 构造函数 / Constructors
+### 推荐 API：Group -> Field -> Agg / Recommended API
+
+```go
+func Field[T any](name string, fn func(T) float64) FieldSelector[T]
+
+func NewGroup[T any, K comparable](
+	data []T,
+	keyFunc func(T) K,
+	fields ...FieldSelector[T],
+) *GroupAgg[T, K]
+```
+
+调用方式：
+
+Usage:
+
+```go
+tradeAgg.Field("volume").Sum()               // map[K]float64
+tradeAgg.Field("notional").Mean()            // map[K]float64
+tradeAgg.Group("buy").Count()                // float64
+tradeAgg.Group("buy").Field("volume").Sum()  // float64
+```
+
+底层数据模型：
+
+Underlying data model:
+
+```go
+map[K]map[string][]float64
+```
+
+`K` 是 `comparable`，可以是 `string`、`bool`、`int` 等，不会强制转换成字符串。
+
+`K` is `comparable`; it can be `string`, `bool`, `int`, and so on. It is not forced into a string key.
+
+### 兼容 API / Compatibility API
 
 ```go
 func NewAggregator[in any, K comparable](
@@ -237,7 +279,11 @@ func New[in any, K comparable](
 ) Aggregator
 ```
 
-### Option
+这套接口保留给旧的单字段聚合代码使用。新业务建议使用 `NewGroup`。
+
+This interface remains available for older single-field aggregation code. New business code should prefer `NewGroup`.
+
+### Option for Compatibility API
 
 | Option | 说明 / Description |
 | --- | --- |
@@ -251,9 +297,10 @@ If `WithTime` is not provided, each group keeps the original input order.
 
 | 类别 / Category | 方法 / Methods |
 | --- | --- |
-| 基础统计 / Basic stats | `Count`, `Sum`, `Mean`, `Median`, `Max`, `Min`, `Var`, `Std`, `Range`, `Quantile` |
-| 序列统计 / Series metrics | `First`, `Last`, `Diff`, `SumAbsDiff`, `AbsDiffSum`, `SumSquaredDiff`, `Gradient`, `FlipRate`, `Change`, `PercentChange`, `NormalizedChange` |
-| 金融指标 / Financial metrics | `Return`, `LogReturn`, `MaxDrawdown` |
+| `GroupAgg` | `Count`, `Sum`, `Mean`, `Max`, `Min`, `First`, `Last`, `Range`, `Change`, `PercentChange`, `Return`, `LogReturn` |
+| `FieldView` | `Count`, `Sum`, `Mean`, `Max`, `Min`, `First`, `Last`, `Range`, `Change`, `PercentChange`, `Return`, `LogReturn` |
+| `GroupView` | `Count`, `Field`, `Sum`, `Mean`, `Max`, `Min`, `First`, `Last`, `Range`, `Change`, `PercentChange`, `Return`, `LogReturn` |
+| `GroupFieldView` | `Count`, `Sum`, `Mean`, `Max`, `Min`, `First`, `Last`, `Range`, `Change`, `PercentChange`, `Return`, `LogReturn` |
 
 ## ⚠️ 边界行为 / Edge Cases
 
