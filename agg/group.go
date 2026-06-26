@@ -1,6 +1,8 @@
 package agg
 
 import (
+	"math"
+
 	"github.com/simonks2016/efi_math/core"
 	"github.com/simonks2016/efi_math/finance"
 	"github.com/simonks2016/efi_math/series"
@@ -64,9 +66,9 @@ func NewGroup[T any, K comparable](
 			out.data[key] = make(map[string][]float64, len(fields))
 		}
 		for _, field := range fields {
-			value := 0.0
-			if field.Fn != nil {
-				value = field.Fn(item)
+			value := field.Fn(item)
+			if math.IsNaN(value) {
+				continue
 			}
 			out.data[key][field.Name] = append(out.data[key][field.Name], value)
 		}
